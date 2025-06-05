@@ -93,11 +93,11 @@ runs:
         fi
 
         python calyptra_ql/cli.py \
-          "$REPO_PATH" \
-          --build-command "$BUILD_CMD" \
+          "${REPO_PATH}" \
+          --build-command "${BUILD_CMD}" \
           -o "${{ github.workspace }}/analysis-results/cbom.json" \
           -c "${{ github.workspace }}/analysis-results/compliance_report.txt" \
-          --rules "$RULES_PATH" \
+          --rules "${RULES_PATH}" \
           -vv
 
     - name: Upload Analysis Results
