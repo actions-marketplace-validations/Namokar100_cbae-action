@@ -127,7 +127,7 @@ runs:
         if [ "$VIOLATIONS" -gt 0 ]; then
           echo "::warning::Found $VIOLATIONS violations. Failing the job."
           exit 1
-        fi
+        fi 
 
     - name: Create Summary
       shell: bash
