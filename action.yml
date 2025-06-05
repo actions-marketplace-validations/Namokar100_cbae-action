@@ -1,0 +1,147 @@
+name: 'CBOM Vulnerability Analysis'
+description: 'Performs CBOM vulnerability analysis on a repository using CLI and provides a detailed compliance report.'
+author: 'Namokar'
+
+inputs:
+  token:
+    description: 'GitHub token with access to clone CBOM tool repo'
+    required: true
+  commands-to-install-build-tools:
+    description: 'Optional shell commands to install custom build tools before analysis'
+    required: false
+  build-command:
+    description: 'Optional build command to compile the project before analysis'
+    required: false
+
+outputs:
+  cbom-report:
+    description: 'Path to the generated CBOM JSON report'
+  compliance-report:
+    description: 'Path to the generated compliance text report'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout Current Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Essential Build Tools
+      shell: bash
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y --no-install-recommends \
+          python3-dev python3-venv git curl build-essential
+
+    - name: Run user-provided build tool install commands
+      if: inputs.commands-to-install-build-tools != ''
+      shell: bash
+      run: |
+        echo "Running user-provided build tool commands..."
+        eval "${{ inputs.commands-to-install-build-tools }}"
+
+    - name: Setup CodeQL CLI
+      shell: bash
+      run: |
+        mkdir -p $HOME/codeql-cli
+        wget -q https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.21.3/codeql-bundle-linux64.tar.gz -O codeql-bundle.tar.gz
+        tar -xzf codeql-bundle.tar.gz -C $HOME/codeql-cli
+        CODEQL_PATH=$(find $HOME/codeql-cli -name codeql -type f | head -n 1)
+        CODEQL_DIR=$(dirname "$CODEQL_PATH")
+        echo "CODEQL_PATH=${CODEQL_PATH}" >> $GITHUB_ENV
+        echo "CODEQL_DIR=${CODEQL_DIR}" >> $GITHUB_ENV
+        echo "${CODEQL_DIR}" >> $GITHUB_PATH
+        "${CODEQL_PATH}" --version
+
+    - name: Clone CBOM Tool
+      uses: actions/checkout@v4
+      with:
+        repository: Namokar100/tool
+        path: .cbom-tool
+        token: ${{ inputs.token }}
+
+    - name: Install CBOM Tool Dependencies
+      shell: bash
+      run: |
+        cd .cbom-tool
+        python -m pip install --upgrade pip setuptools wheel
+        python -m venv venv
+        source venv/bin/activate
+        pip install -r requirements.txt
+        pip install -e .
+
+    - name: Create Output Directory
+      shell: bash
+      run: mkdir -p analysis-results
+
+    - name: Run CBOM Analysis
+      shell: bash
+      run: |
+        cd .cbom-tool
+        source venv/bin/activate
+        REPO_PATH="${{ github.workspace }}"
+        RULES_PATH="${{ github.workspace }}/.cbom-tool/data/default_rules.yaml"
+
+        if [[ "${{ inputs.build-command }}" != "" ]]; then
+          BUILD_CMD="${{ inputs.build-command }}"
+        else
+          BUILD_CMD="autoreconf -fi && ./configure --with-openssl && make -j$(nproc)"
+        fi
+
+        python calyptra_ql/cli.py \
+          "$REPO_PATH" \
+          --build-command "$BUILD_CMD" \
+          -o "${{ github.workspace }}/analysis-results/cbom.json" \
+          -c "${{ github.workspace }}/analysis-results/compliance_report.txt" \
+          --rules "$RULES_PATH" \
+          -vv
+
+    - name: Upload Analysis Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: cbom-analysis-results
+        path: |
+          analysis-results/cbom.json
+          analysis-results/compliance_report.txt
+
+    - name: Set Outputs
+      shell: bash
+      run: |
+        echo "cbom-report=analysis-results/cbom.json" >> $GITHUB_OUTPUT
+        echo "compliance-report=analysis-results/compliance_report.txt" >> $GITHUB_OUTPUT
+
+    - name: Check for Vulnerabilities and Fail if Found
+      shell: bash
+      run: |
+        REPORT_PATH="analysis-results/compliance_report.txt"
+        if [ ! -f "$REPORT_PATH" ]; then
+          echo "::error::Compliance report not found"
+          exit 1
+        fi
+
+        VIOLATIONS=$(grep -c '^- Rule ID:' "$REPORT_PATH")
+        if [ "$VIOLATIONS" -gt 0 ]; then
+          echo "::warning::Found $VIOLATIONS violations. Failing the job."
+          exit 1
+        fi
+
+    - name: Create Summary
+      shell: bash
+      run: |
+        echo "## CBOM Vulnerability Analysis Summary" >> $GITHUB_STEP_SUMMARY
+        echo "Repository: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+        echo "Branch: ${GITHUB_REF#refs/heads/}" >> $GITHUB_STEP_SUMMARY
+        echo "Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "Timestamp: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f "analysis-results/compliance_report.txt" ]; then
+          COUNT=$(grep -c '^- Rule ID:' analysis-results/compliance_report.txt || true)
+          echo "**Security Violations Detected:** $COUNT" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Compliance report not found." >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "Artifacts with full results are attached." >> $GITHUB_STEP_SUMMARY
