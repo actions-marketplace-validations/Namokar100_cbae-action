@@ -1,4 +1,4 @@
-name: 'CBOM Vulnerability Analysis'
+name: 'CBAE action'
 description: 'Performs CBOM vulnerability analysis on a repository using CLI and provides a detailed compliance report.'
 author: 'Namokar'
 
