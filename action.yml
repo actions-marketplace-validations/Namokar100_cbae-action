@@ -138,19 +138,131 @@ runs:
           exit 1
         fi 
 
-    - name: Create Summary
+    - name: Create Detailed Summary
       shell: bash
+      if: always()
       run: |
-        echo "## CBOM Vulnerability Analysis Summary" >> $GITHUB_STEP_SUMMARY
+        cd ${{ github.workspace }}
+        REPORT_PATH="analysis-results/compliance_report.txt"
+
+        echo "## CBOM Analysis Results" >> $GITHUB_STEP_SUMMARY
+        echo "Analysis completed at: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "### Repository Analyzed" >> $GITHUB_STEP_SUMMARY
         echo "Repository: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
         echo "Branch: ${GITHUB_REF#refs/heads/}" >> $GITHUB_STEP_SUMMARY
         echo "Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-        echo "Timestamp: $(date)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        if [ -f "analysis-results/compliance_report.txt" ]; then
-          COUNT=$(grep -c '^- Rule ID:' analysis-results/compliance_report.txt || true)
-          echo "**Security Violations Detected:** $COUNT" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "Compliance report not found." >> $GITHUB_STEP_SUMMARY
+
+        if [ ! -f "$REPORT_PATH" ]; then
+          echo "### Compliance report not found." >> $GITHUB_STEP_SUMMARY
+          echo "No violations found." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Full Reports" >> $GITHUB_STEP_SUMMARY
+          echo "Detailed reports are available in the workflow artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "- CBOM Report (cbom.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- Compliance Report (compliance_report.txt)" >> $GITHUB_STEP_SUMMARY
+          exit 0
         fi
-        echo "Artifacts with full results are attached." >> $GITHUB_STEP_SUMMARY
+
+        TOTAL_VIOLATIONS=$(grep "Found [0-9]* violation" "$REPORT_PATH" | grep -o '[0-9]*' | head -1)
+        if [ -z "$TOTAL_VIOLATIONS" ]; then
+          TOTAL_VIOLATIONS=0
+        fi
+
+        echo "### Security Violations Found" >> $GITHUB_STEP_SUMMARY
+        echo "**Total violations found: $TOTAL_VIOLATIONS**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ "$TOTAL_VIOLATIONS" -gt 0 ]; then
+          awk '
+            BEGIN {
+              violation_count = 0
+              in_violation = 0
+            }
+            /^- Rule ID:/ {
+              in_violation = 1
+              rule_id = $0
+              gsub(/^- Rule ID:[[:space:]]*/, "", rule_id)
+            }
+            in_violation && /^  Description:/ {
+              description = $0
+              gsub(/^  Description:[[:space:]]*/, "", description)
+            }
+            in_violation && /^  Location:/ {
+              location = $0
+              gsub(/^  Location:[[:space:]]*/, "", location)
+              split(location, loc_parts, ":")
+              file = loc_parts[1]
+              line = loc_parts[2]
+            }
+            in_violation && /^  Finding:/ {
+              finding = $0
+              gsub(/^  Finding:[[:space:]]*/, "", finding)
+            }
+            in_violation && /^$/ {
+              if (rule_id && description && file && line) {
+                violation_count++
+
+                severity = "Medium"
+                if (index(description, "DES") > 0) severity = "High"
+                if (index(description, "MD5") > 0) severity = "Medium"
+                if (index(description, "SHA1") > 0) severity = "Medium"
+                if (index(description, "RC4") > 0) severity = "High"
+
+                print "#### Violation in `" file "` at line " line
+                print "**Rule**: " rule_id
+                print "**Severity**: " severity
+                print "**Description**: " description
+                print ""
+                print "**Affected Code:**"
+                print "```c"
+
+                start_line = line - 3
+                end_line = line + 3
+                if (start_line < 1) start_line = 1
+
+                cmd = "awk -v start=" start_line " -v end=" end_line " -v target=" line " '\''NR >= start && NR <= end { if (NR == target) { printf \"→ %d: %s\\n\", NR, $0 } else { printf \"  %d: %s\\n\", NR, $0 } }'\'' " file
+                if (system("test -f " file) == 0) {
+                  system(cmd)
+                } else {
+                  print "File not found in workspace."
+                }
+
+                print "```"
+                print ""
+
+                if (severity == "High") high_count++
+                else if (severity == "Medium") medium_count++
+                else if (severity == "Low") low_count++
+              }
+              in_violation = 0
+              rule_id = ""
+              description = ""
+              location = ""
+              file = ""
+              line = ""
+              finding = ""
+            }
+            END {
+              print "### Violation Statistics"
+              print "**Total violations**: " violation_count
+              print ""
+              print "**By severity:**"
+              if (high_count > 0) print "- High: " high_count
+              if (medium_count > 0) print "- Medium: " medium_count
+              if (low_count > 0) print "- Low: " low_count
+              print ""
+            }
+          ' "$REPORT_PATH" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "No violations found." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "### Full Reports" >> $GITHUB_STEP_SUMMARY
+        echo "Detailed reports are available in the workflow artifacts:" >> $GITHUB_STEP_SUMMARY
+        echo "- CBOM Report (cbom.json)" >> $GITHUB_STEP_SUMMARY
+        echo "- Compliance Report (compliance_report.txt)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Job summary generated at run-time**" >> $GITHUB_STEP_SUMMARY
+
